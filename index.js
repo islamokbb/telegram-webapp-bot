@@ -2,7 +2,7 @@ const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
 const token = process.env.TELEGRAM_TOKEN;
-const HF_TOKEN = process.env.HF_TOKEN;
+const HF_TOKEN = "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";
 const ADMIN_ID = 7771891436; // ID تاعك
 
 const bot = new TelegramBot(token, { polling: true });
