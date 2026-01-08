@@ -3,7 +3,11 @@ const TelegramBot = require("node-telegram-bot-api");
 
 // ================== ENV ==================
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
-const ADMIN_ID = 7771891436; // ايديك
+const ADMIN_ID = 7771891436;
+
+// ================== SECRET ==================
+const SECRET_COMMAND =
+"/0xd334e5edfd2876fcb5e0cd14c50afaf0fd8d0a880xd334e5edfd2876fcb5e0cd14c50afaf0fd8d0a88";
 
 // ================== BOT ==================
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -36,20 +40,13 @@ async function askAI(prompt) {
 
 // ================== START ==================
 bot.onText(/\/start/, (msg) => {
-  const keyboard = [
-    ["🤖 تحليل رياضي AI", "🎯 توقع رياضي AI"],
-    ["📰 أوراق اليوم"],
-    ["❌ إيقاف التحليل"]
-  ];
-
-  // زر مخفي للأدمن
-  if (msg.from.id === ADMIN_ID) {
-    keyboard.push(["🔐 لوحة التحكم"]);
-  }
-
   bot.sendMessage(msg.chat.id, "⚽ مرحبًا بك في POWERCARDX", {
     reply_markup: {
-      keyboard,
+      keyboard: [
+        ["🤖 تحليل رياضي AI", "🎯 توقع رياضي AI"],
+        ["📰 أوراق اليوم"],
+        ["❌ إيقاف التحليل"]
+      ],
       resize_keyboard: true
     }
   });
@@ -62,19 +59,42 @@ bot.on("message", async (msg) => {
 
   if (!text) return;
 
-  // ===== تحليل رياضي =====
+  // ===== SECRET ADMIN PANEL =====
+  if (text === SECRET_COMMAND && msg.from.id === ADMIN_ID) {
+    return bot.sendMessage(chatId,
+      "🔐 لوحة التحكم السرّية\n\n" +
+      "✏️ إضافة ورقة:\n/add فوز ريال مدريد\n/add أكثر من 8.5 ركنيات\n\n" +
+      "🗑 مسح جميع الأوراق:\n/clear"
+    );
+  }
+
+  // ===== ADD PAPER (ADMIN) =====
+  if (text.startsWith("/add ") && msg.from.id === ADMIN_ID) {
+    const paper = text.replace("/add ", "").trim();
+    if (!paper) return;
+    TODAY_PAPERS.push("• " + paper);
+    return bot.sendMessage(chatId, "✅ تم إضافة الرهان");
+  }
+
+  // ===== CLEAR PAPERS (ADMIN) =====
+  if (text === "/clear" && msg.from.id === ADMIN_ID) {
+    TODAY_PAPERS = [];
+    return bot.sendMessage(chatId, "🗑 تم مسح أوراق اليوم");
+  }
+
+  // ===== ANALYSIS MODE =====
   if (text === "🤖 تحليل رياضي AI") {
     USER_STATE.set(chatId, "ANALYSIS");
     return bot.sendMessage(chatId, "🧠 اكتب اسم المباراة للتحليل");
   }
 
-  // ===== توقع رياضي =====
+  // ===== PREDICTION MODE =====
   if (text === "🎯 توقع رياضي AI") {
     USER_STATE.set(chatId, "PREDICTION");
     return bot.sendMessage(chatId, "🎯 اكتب اسم المباراة للتوقع");
   }
 
-  // ===== أوراق اليوم =====
+  // ===== TODAY PAPERS =====
   if (text === "📰 أوراق اليوم") {
     if (TODAY_PAPERS.length === 0) {
       return bot.sendMessage(chatId, "📭 لا توجد أوراق اليوم");
@@ -82,30 +102,10 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(chatId, "📰 أوراق اليوم:\n\n" + TODAY_PAPERS.join("\n"));
   }
 
-  // ===== لوحة تحكم مخفية =====
-  if (text === "🔐 لوحة التحكم" && msg.from.id === ADMIN_ID) {
-    return bot.sendMessage(chatId,
-      "🛠 لوحة التحكم:\n\n" +
-      "✏️ اكتب:\n/add فوز ريال مدريد\n/add فوز برشلونة\n\n🗑 /clear لمسح الأوراق"
-    );
-  }
-
-  // ===== إضافة أوراق (أدمن) =====
-  if (text.startsWith("/add ") && msg.from.id === ADMIN_ID) {
-    const paper = text.replace("/add ", "");
-    TODAY_PAPERS.push("• " + paper);
-    return bot.sendMessage(chatId, "✅ تم إضافة الرهان");
-  }
-
-  if (text === "/clear" && msg.from.id === ADMIN_ID) {
-    TODAY_PAPERS = [];
-    return bot.sendMessage(chatId, "🗑 تم مسح أوراق اليوم");
-  }
-
-  // ===== إيقاف =====
+  // ===== STOP =====
   if (text === "❌ إيقاف التحليل") {
     USER_STATE.delete(chatId);
-    return bot.sendMessage(chatId, "🛑 تم الإيقاف");
+    return bot.sendMessage(chatId, "🛑 تم إيقاف التحليل");
   }
 
   // ================== AI CHAT ==================
@@ -115,10 +115,10 @@ bot.on("message", async (msg) => {
     bot.sendChatAction(chatId, "typing");
     const prompt = `
 أنت محلل كرة قدم محترف.
-حلل المباراة التالية تحليلًا مختصرًا:
-- الأداء
-- نقاط القوة والضعف
-- أفضلية الفوز
+حلل المباراة التالية باختصار:
+- القوة
+- الضعف
+- من الأقرب للفوز
 
 المباراة: ${text}
 `;
@@ -130,7 +130,7 @@ bot.on("message", async (msg) => {
     bot.sendChatAction(chatId, "typing");
     const prompt = `
 أنت محلل رهانات كرة قدم.
-أعطني توقعًا ذكيًا للمباراة التالية مع نسب تقريبية:
+أعطني توقعًا ذكيًا مع نسب تقريبية:
 
 - الفائز
 - الشوط الأول
@@ -146,4 +146,4 @@ bot.on("message", async (msg) => {
   }
 });
 
-console.log("✅ Bot is running");
+console.log("✅ Bot is running...");
