@@ -1,86 +1,157 @@
-import requests
-import re
-from deep_translator import GoogleTranslator
-import telebot
-from telebot import types
+const TelegramBot = require("node-telegram-bot-api");
 
-token = "8579302087:AAHYaZr8wzEWEBjthbywSQvXgHocEL7GOww" 
-Hesion = telebot.TeleBot(token)
 
-def translate_text(text, target_language='en'):
-    translated = GoogleTranslator(source='auto', target=target_language).translate(text)
-    return translated
+// ================== TOKENS ==================
+const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
+const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
+const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 
-def Hasso(query, chat_id):
-    if re.search('[\u0600-\u06FF]', query): 
-        query = translate_text(query, 'en')
-    
-    url = "https://api.getimg.ai/v1/stable-diffusion-xl/text-to-image"
-    headers = {
-        'Host': 'api.getimg.ai',
-        'Accept': 'application/json',
-        'Authorization': 'Bearer key-3XbWkFO34FVCQUnJQ6A3qr702Eu7DDR1dqoJOyhMHqhruEhs22KUzR7w631ZFiA5OFZIba7i44qDQEMpKxzegOUm83vCfILb',
-        'Content-Type': 'application/json',
-        'User-Agent': 'okhttp/4.12.0',
-        'Connection': 'keep-alive'
-    }
-    payload = {
-        'height': 1024,
-        'model': 'realvis-xl-v4',
-        'negative_prompt': None,
-        'prompt': query,
-        'response_format': 'url',
-        'seed': 0,
-        'steps': 30,
-        'width': 1024,
-    }
+// ================== BOT ==================
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-    response = requests.post(url, headers=headers, json=payload).json()
-    image_url = response.get('url')
-    
-    if image_url:
-        telegram_url = f"https://api.telegram.org/bot{token}/sendPhoto"
-        telegram_params = {
-            'chat_id': chat_id,
-            'photo': image_url,
-            'caption': f"صوره تم البحث.عنها: {query}"
+// ================== STATE ==================
+const AI_USERS = new Set();
+
+// ================== UTILS ==================
+function cleanText(text = "") {
+  return text
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/_/g, "")
+    .replace(/`/g, "")
+    .replace(/\[/g, "")
+    .replace(/\]/g, "");
+}
+
+// ================== AI ==================
+async function askAI(question) {
+  try {
+    const prompt = `
+أنت محلل كرة قدم محترف.
+إذا لم تكن متأكدًا قل ذلك.
+حلل السؤال التالي:
+
+${question}
+`;
+    const res = await fetch(
+      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(prompt)}`
+    );
+    const data = await res.json();
+    return cleanText(data.response || "❌ لا يوجد تحليل");
+  } catch {
+    return "⚠️ التحليل غير متاح الآن";
+  }
+}
+
+// ================== API-FOOTBALL ==================
+async function getTodayMatches() {
+  const today = new Date().toISOString().split("T")[0];
+  const res = await fetch(
+    `https://v3.football.api-sports.io/fixtures?date=${today}`,
+    { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
+  );
+  const data = await res.json();
+  return data.response.slice(0, 6);
+}
+
+async function getStandings() {
+  const res = await fetch(
+    `https://v3.football.api-sports.io/standings?league=39&season=2024`,
+    { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
+  );
+  const data = await res.json();
+  return data.response[0].league.standings[0].slice(0, 5);
+}
+// ================== SPORTMONKS ==================
+async function getSportmonksPredictions() {
+  try {
+    const res = await fetch(
+      "https://api.sportmonks.com/v3/football/fixtures?include=predictions",
+      {
+        headers: {
+          Authorization: SPORTMONKS_API_KEY
         }
-        telegram_response = requests.post(telegram_url, data=telegram_params)
-        
-        if telegram_response.status_code == 200:
-            Hesion.send_message(chat_id, "تم بنجاح ارسال صوره")
-        else:
-            Hesion.send_message(chat_id, "لم يتم ارسال صوره.")
-    else:
-        Hesion.send_message(chat_id, " ماموجود هذه البحث.")
+      }
+    );
+    const data = await res.json();
+    return data.data.slice(0, 3);
+  } catch {
+    return [];
+  }
+}
 
-@Hesion.message_handler(commands=['start'])
-def send_welcome(message):
-    markup = types.InlineKeyboardMarkup()
-    item = types.InlineKeyboardButton('✨دوس البد✨', callback_data='create_image')
-    developerj = types.InlineKeyboardButton('✨ حسابي ✨', url='https://t.me/lIIHII')
-    channelj = types.InlineKeyboardButton('قناتنا ⚠️', url='https://t.me/z3x5j')
-    markup.add(developerj, channelj)
-    markup.add(item)
-    photo_url = f"https://t.me/{message.from_user.username}"
-    namess = f"[{message.from_user.first_name}]({photo_url})"
-    text = f"⚠️ هلا عزيزي نورت البوت ✨{namess}✨ في \nالبوت يدعم الغه العربيه ونكليزيه ضغط البد"
-    Hesion.send_photo(message.chat.id, photo_url, caption=text, parse_mode='Markdown', reply_markup=markup)
-@Hesion.callback_query_handler(func=lambda call: call.data == "create_image")
-def ask_for_description(call):
-    Hesion.send_message(call.message.chat.id, "كتب ماذا تريد بحث عنه:")
+// ================== START ==================
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id, "⚽ مرحبًا بك في محلل كرة القدم الذكي", {
+    reply_markup: {
+      keyboard: [
+        ["📅 مباريات اليوم", "📊 ترتيب الدوري"],
+        ["🔮 توقعات المباريات", "🤖 تحليل رياضي"],
+        ["❌ إيقاف التحليل"]
+      ],
+      resize_keyboard: true
+    }
+  });
+});
 
-@Hesion.message_handler(func=lambda message: True)
-def get_description(message):
-    description = message.text
-    chat_id = message.chat.id
-    
-    if re.search('[\u0600-\u06FF]', description):
-        description = translate_text(description, 'en')
-    Hasso(description, chat_id)
+// ================== HANDLER ==================
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
 
-Hesion.polling()
+  if (!text) return;
 
- #اسرع وافضل ذكاء اصطناعي
+  // مباريات اليوم
+  if (text === "📅 مباريات اليوم") {
+    const matches = await getTodayMatches();
+    let reply = "📅 مباريات اليوم:\n\n";
+    matches.forEach(m => {
+      reply += `${m.teams.home.name} vs ${m.teams.away.name}\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }
 
-#طبعن التصال شخص مستخرجه واني برمجت عليه هذه بوت
+  // ترتيب الدوري
+  if (text === "📊 ترتيب الدوري") {
+    const table = await getStandings();
+    let reply = "📊 ترتيب الدوري:\n\n";
+    table.forEach(t => {
+      reply += `${t.rank}. ${t.team.name} (${t.points} نقطة)\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }
+
+  // توقعات SportMonks
+  if (text === "🔮 توقعات المباريات") {
+    const preds = await getSportmonksPredictions();
+    if (preds.length === 0) {
+      return bot.sendMessage(chatId, "⚠️ لا توجد توقعات متاحة الآن");
+    }
+    let reply = "🔮 توقعات المباريات:\n\n";
+    preds.forEach(f => {
+      reply += `${f.name}\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }  }
+
+  // غيل التحليل
+  if (text === "🤖 تحليل رياضي") {
+    AI_USERS.add(chatId);
+    return bot.sendMessage(chatId, "🤖 اكتب سؤالك الرياضي الآن");
+  }
+
+  // إيقاف التحليل
+  if (text === "❌ إيقاف التحليل") {
+    AI_USERS.delete(chatId);
+    return bot.sendMessage(chatId, "🛑 تم إيقاف التحليل");
+  }
+
+  // ================== AI CHAT ==================
+  if (AI_USERS.has(chatId)) {
+    bot.sendChatAction(chatId, "typing");
+    const answer = await askAI(text);
+    return bot.sendMessage(chatId, answer, { parse_mode: undefined });
+  }
+});
+
+console.log("✅ Bot is running...");
