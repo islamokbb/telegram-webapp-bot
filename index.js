@@ -1,49 +1,34 @@
 const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
 
-// ===== إعدادات =====
+// ===== TOKEN =====
 const token = process.env.TELEGRAM_TOKEN || "8579302087:AAHYaZr8wzEWEBjthbywSQvXgHocEL7GOww";
-const ADMIN_ID = 7771891436;
-
 const bot = new TelegramBot(token, { polling: true });
 
-// ===== VIP =====
-let VIP_USERS = new Set();
+// ===== حالات المستخدم =====
+const userState = {}; // ai / null
+const userLang = {};  // ar / en / fr
 
-if (fs.existsSync("vip.json")) {
-  const data = JSON.parse(fs.readFileSync("vip.json"));
-  data.forEach(id => VIP_USERS.add(id));
-}
-
-function saveVIP() {
-  fs.writeFileSync("vip.json", JSON.stringify([...VIP_USERS]));
-}
-
-// إضافة VIP
-bot.onText(/\/addvip (\d+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  const userId = Number(match[1]);
-  VIP_USERS.add(userId);
-  saveVIP();
-
-  bot.sendMessage(msg.chat.id, `✅ تم تفعيل VIP:\n${userId}`);
-  bot.sendMessage(userId, "🎉 تم تفعيل VIP الخاص بك");
-});
-
-// حذف VIP
-bot.onText(/\/removevip (\d+)/, (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-
-  VIP_USERS.delete(Number(match[1]));
-  saveVIP();
-  bot.sendMessage(msg.chat.id, "❌ تم حذف VIP");
-});
-
-// معرفة ID
-bot.onText(/\/id/, (msg) => {
-  bot.sendMessage(msg.chat.id, `🆔 ID الخاص بك:\n${msg.from.id}`);
-});
+// ===== نصوص حسب اللغة =====
+const T = {
+  ar: {
+    welcome: "⚽ مرحبًا بك\nاختر الخدمة:",
+    ai: "🤖 الذكاء الاصطناعي",
+    ask: "✍️ اكتب سؤالك:",
+    back: "🔙 رجوع"
+  },
+  en: {
+    welcome: "⚽ Welcome\nChoose a service:",
+    ai: "🤖 AI Assistant",
+    ask: "✍️ Ask your question:",
+    back: "🔙 Back"
+  },
+  fr: {
+    welcome: "⚽ Bienvenue\nChoisissez un service:",
+    ai: "🤖 Intelligence Artificielle",
+    ask: "✍️ Écrivez votre question:",
+    back: "🔙 Retour"
+  }
+};
 
 // ===== ذكاء اصطناعي (elos-gemina) =====
 async function askAI(text) {
@@ -52,22 +37,20 @@ async function askAI(text) {
       `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`
     );
     const data = await res.json();
-    return data.response || "❌ لا يوجد رد";
-  } catch {
-    return "⚠️ حاول لاحقًا";
+    return data.response || "❌ No response";
+  } catch (e) {
+    return "⚠️ AI not available now";
   }
 }
 
-// ===== START =====
+// ===== اختيار اللغة =====
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, "⚽ مرحبًا، اختر:", {
+  bot.sendMessage(msg.chat.id, "🌍 اختر اللغة / Choose language", {
     reply_markup: {
       inline_keyboard: [
-        [{ text: "📊 سترات", web_app: { url: "https://powercardx.com/" } }],
-        [{ text: "🌐 موقع 2", web_app: { url: "https://powercardx.com/" } }],
-        [{ text: "🌐 موقع 3", web_app: { url: "https://powercardx.com/" } }],
-        [{ text: "🌐 موقع 4", web_app: { url: "https://powercardx.com/" } }],
-        [{ text: "🤖 ذكاء اصطناعي", callback_data: "AI" }]
+        [{ text: "🇸🇦 العربية", callback_data: "lang_ar" }],
+        [{ text: "🇬🇧 English", callback_data: "lang_en" }],
+        [{ text: "🇫🇷 Français", callback_data: "lang_fr" }]
       ]
     }
   });
@@ -77,18 +60,53 @@ bot.onText(/\/start/, (msg) => {
 bot.on("callback_query", (q) => {
   const chatId = q.message.chat.id;
 
-  if (!VIP_USERS.has(q.from.id)) {
-    bot.sendMessage(chatId, "🔒 هذه الخدمة VIP فقط");
-    return;
+  // اختيار اللغة
+  if (q.data.startsWith("lang_")) {
+    const lang = q.data.split("_")[1];
+    userLang[chatId] = lang;
+
+    bot.sendMessage(chatId, T[lang].welcome, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📊 Stats", web_app: { url: "https://powercardx.com/" } }],
+          [{ text: "🌐 Website", web_app: { url: "https://powercardx.com/" } }],
+          [{ text: T[lang].ai, callback_data: "AI" }]
+        ]
+      }
+    });
   }
 
+  // دخول وضع الذكاء الاصطناعي
   if (q.data === "AI") {
-    bot.sendMessage(chatId, "🤖 اكتب سؤالك:");
-
-    bot.once("message", async (msg) => {
-      const answer = await askAI(msg.text);
-      bot.sendMessage(chatId, answer);
+    userState[chatId] = "ai";
+    const lang = userLang[chatId] || "ar";
+    bot.sendMessage(chatId, T[lang].ask, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: T[lang].back, callback_data: "BACK" }]
+        ]
+      }
     });
+  }
+
+  // رجوع
+  if (q.data === "BACK") {
+    userState[chatId] = null;
+    const lang = userLang[chatId] || "ar";
+    bot.sendMessage(chatId, T[lang].welcome);
+  }
+});
+
+// ===== استقبال الرسائل =====
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  if (!msg.text) return;
+
+  // إذا المستخدم في وضع AI
+  if (userState[chatId] === "ai") {
+    bot.sendChatAction(chatId, "typing");
+    const answer = await askAI(msg.text);
+    bot.sendMessage(chatId, answer);
   }
 });
 
