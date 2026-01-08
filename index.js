@@ -1,188 +1,158 @@
 const TelegramBot = require("node-telegram-bot-api");
+const fetch = require("node-fetch");
 
-
-// ================== إعدادات ==================
-const token = process.env.TELEGRAM_TOKEN;
+// ================== TOKENS ==================
+const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
+const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 
-const bot = new TelegramBot(token, { polling: true });
+// ================== BOT ==================
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// ================== حالات المستخدم ==================
-const AI_USERS = new Set();     // من فعّل التحليل
-const USER_LANG = {};           // ar / en / fr
+// ================== STATE ==================
+const AI_USERS = new Set();
 
-// ================== النصوص ==================
-const TEXT = {
-  ar: {
-    welcome: "⚽ مرحبًا بك\nأنا محلل كرة قدم ذكي 🤖\nاختر من الأزرار 👇",
-    ai_on: "🤖 تم تفعيل التحليل الرياضي\nاسألني بلا حدود ⚽",
-    ai_off: "❌ تم إيقاف التحليل",
-    help: "ℹ️ أنا محلل كرة قدم:\n- لاعبين\n- تحليل مباريات\n- توقعات",
-    choose_lang: "🌍 اختر اللغة"
-  },
-  en: {
-    welcome: "⚽ Welcome\nI am a football analyst 🤖",
-    ai_on: "🤖 Football analysis activated",
-    ai_off: "❌ Analysis stopped",
-    help: "ℹ️ I analyze football: players, matches, tactics",
-    choose_lang: "🌍 Choose language"
-  },
-  fr: {
-    welcome: "⚽ Bienvenue\nJe suis analyste football 🤖",
-    ai_on: "🤖 Analyse activée",
-    ai_off: "❌ Analyse arrêtée",
-    help: "ℹ️ Analyse football: joueurs, matchs, tactiques",
-    choose_lang: "🌍 Choisir la langue"
-  }
-};
-
-// ================== لوحة أزرار ثابتة ==================
-function mainKeyboard() {
-  return {
-    keyboard: [
-      ["🤖 تحليل رياضي"],
-      ["🌍 اللغة", "ℹ️ مساعدة"],
-      ["❌ إيقاف التحليل"]
-    ],
-    resize_keyboard: true
-  };
+// ================== UTILS ==================
+function cleanText(text = "") {
+  return text
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/_/g, "")
+    .replace(/`/g, "")
+    .replace(/\[/g, "")
+    .replace(/\]/g, "");
 }
 
-// ================== AI (تحليل فقط) ==================
+// ================== AI ==================
 async function askAI(question) {
   try {
     const prompt = `
-أنت محلل كرة قدم محترف فقط.
+أنت محلل كرة قدم محترف.
 إذا لم تكن متأكدًا قل ذلك.
-حلل السؤال التالي تحليلاً رياضيًا:
+حلل السؤال التالي:
 
 ${question}
 `;
-
     const res = await fetch(
       `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(prompt)}`
     );
-
     const data = await res.json();
-    return data.response || "❌ لا يوجد تحليل";
+    return cleanText(data.response || "❌ لا يوجد تحليل");
   } catch {
     return "⚠️ التحليل غير متاح الآن";
   }
 }
 
-// ================== API-Football (لاعبين) ==================
-async function getPlayerInfo(name) {
+// ================== API-FOOTBALL ==================
+async function getTodayMatches() {
+  const today = new Date().toISOString().split("T")[0];
+  const res = await fetch(
+    `https://v3.football.api-sports.io/fixtures?date=${today}`,
+    { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
+  );
+  const data = await res.json();
+  return data.response.slice(0, 6);
+}
+
+async function getStandings() {
+  const res = await fetch(
+    `https://v3.football.api-sports.io/standings?league=39&season=2024`,
+    { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
+  );
+  const data = await res.json();
+  return data.response[0].league.standings[0].slice(0, 5);
+}
+
+// ================== SPORTMONKS ==================
+async function getSportmonksPredictions() {
   try {
     const res = await fetch(
-      `https://v3.football.api-sports.io/players?search=${encodeURIComponent(name)}`,
+      "https://api.sportmonks.com/v3/football/fixtures?include=predictions",
       {
         headers: {
-          "x-apisports-key": FOOTBALL_API_KEY
+          Authorization: SPORTMONKS_API_KEY
         }
       }
     );
-
     const data = await res.json();
-    if (!data.response || data.response.length === 0) return null;
-
-    const p = data.response[0];
-    const s = p.statistics[0];
-
-    return {
-      name: p.player.name,
-      age: p.player.age,
-      nationality: p.player.nationality,
-      position: p.player.position,
-      team: s.team.name,
-      league: s.league.name
-    };
+    return data.data.slice(0, 3);
   } catch {
-    return null;
+    return [];
   }
 }
 
 // ================== START ==================
 bot.onText(/\/start/, (msg) => {
-  USER_LANG[msg.chat.id] = "ar";
-  bot.sendMessage(
-    msg.chat.id,
-    TEXT.ar.welcome,
-    { reply_markup: mainKeyboard() }
-  );
+  bot.sendMessage(msg.chat.id, "⚽ مرحبًا بك في محلل كرة القدم الذكي", {
+    reply_markup: {
+      keyboard: [
+        ["📅 مباريات اليوم", "📊 ترتيب الدوري"],
+        ["🔮 توقعات المباريات", "🤖 تحليل رياضي"],
+        ["❌ إيقاف التحليل"]
+      ],
+      resize_keyboard: true
+    }
+  });
 });
 
-// ================== استقبال الرسائل ==================
+// ================== HANDLER ==================
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
-  const lang = USER_LANG[chatId] || "ar";
 
   if (!text) return;
+
+  // مباريات اليوم
+  if (text === "📅 مباريات اليوم") {
+    const matches = await getTodayMatches();
+    let reply = "📅 مباريات اليوم:\n\n";
+    matches.forEach(m => {
+      reply += `${m.teams.home.name} vs ${m.teams.away.name}\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }
+
+  // ترتيب الدوري
+  if (text === "📊 ترتيب الدوري") {
+    const table = await getStandings();
+    let reply = "📊 ترتيب الدوري:\n\n";
+    table.forEach(t => {
+      reply += `${t.rank}. ${t.team.name} (${t.points} نقطة)\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }
+
+  // توقعات SportMonks
+  if (text === "🔮 توقعات المباريات") {
+    const preds = await getSportmonksPredictions();
+    if (preds.length === 0) {
+      return bot.sendMessage(chatId, "⚠️ لا توجد توقعات متاحة الآن");
+    }
+    let reply = "🔮 توقعات المباريات:\n\n";
+    preds.forEach(f => {
+      reply += `${f.name}\n`;
+    });
+    return bot.sendMessage(chatId, reply);
+  }
 
   // تشغيل التحليل
   if (text === "🤖 تحليل رياضي") {
     AI_USERS.add(chatId);
-    return bot.sendMessage(chatId, TEXT[lang].ai_on);
+    return bot.sendMessage(chatId, "🤖 اكتب سؤالك الرياضي الآن");
   }
 
   // إيقاف التحليل
   if (text === "❌ إيقاف التحليل") {
     AI_USERS.delete(chatId);
-    return bot.sendMessage(chatId, TEXT[lang].ai_off);
+    return bot.sendMessage(chatId, "🛑 تم إيقاف التحليل");
   }
 
-  // مساعدة
-  if (text === "ℹ️ مساعدة") {
-    return bot.sendMessage(chatId, TEXT[lang].help);
-  }
-
-  // تغيير اللغة
-  if (text === "🌍 اللغة") {
-    return bot.sendMessage(chatId, TEXT[lang].choose_lang, {
-      reply_markup: {
-        keyboard: [
-          ["🇸🇦 العربية", "🇬🇧 English", "🇫🇷 Français"],
-          ["🔙 رجوع"]
-        ],
-        resize_keyboard: true
-      }
-    });
-  }
-
-  // اختيار لغة
-  if (text === "🇸🇦 العربية") USER_LANG[chatId] = "ar";
-  if (text === "🇬🇧 English") USER_LANG[chatId] = "en";
-  if (text === "🇫🇷 Français") USER_LANG[chatId] = "fr";
-
-  if (["🇸🇦 العربية", "🇬🇧 English", "🇫🇷 Français", "🔙 رجوع"].includes(text)) {
-    const l = USER_LANG[chatId] || "ar";
-    return bot.sendMessage(chatId, TEXT[l].welcome, {
-      reply_markup: mainKeyboard()
-    });
-  }
-
-  // ================== التحليل الرياضي الحقيقي ==================
+  // ================== AI CHAT ==================
   if (AI_USERS.has(chatId)) {
     bot.sendChatAction(chatId, "typing");
-
-    // 1️⃣ هل السؤال عن لاعب؟
-    const player = await getPlayerInfo(text);
-    if (player) {
-      return bot.sendMessage(
-        chatId,
-        `👤 ${player.name}
-🌍 الجنسية: ${player.nationality}
-🎂 العمر: ${player.age}
-📍 المركز: ${player.position}
-🏟️ النادي: ${player.team}
-🏆 الدوري: ${player.league}`
-      );
-    }
-
-    // 2️⃣ تحليل AI
     const answer = await askAI(text);
-    return bot.sendMessage(chatId, answer);
+    return bot.sendMessage(chatId, answer, { parse_mode: undefined });
   }
 });
 
-console.log("✅ Football Analyst Bot is running...");
+console.log("✅ Bot is running...");
