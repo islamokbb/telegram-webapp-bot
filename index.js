@@ -132,7 +132,7 @@ bot.on("message", async (msg) => {
       reply += `${f.name}\n`;
     });
     return bot.sendMessage(chatId, reply);
-  }  }
+  } 
 
   // غيل التحليل
   if (text === "🤖 تحليل رياضي") {
