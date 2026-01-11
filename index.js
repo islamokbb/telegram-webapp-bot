@@ -1,6 +1,10 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
+// ===== fetch =====
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
 // ===== ENV =====
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
@@ -11,8 +15,8 @@ const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ===== STATE & MEMORY =====
-const STATE = new Map();      // ANALYZE | PREDICT | ADD | NONE
-const MEMORY = new Map();     // آخر 3 رسائل لكل مستخدم
+const STATE = new Map();   // NONE | ANALYZE | PREDICT | ADD
+const MEMORY = new Map();  // آخر 3 رسائل
 
 // ===== FILE =====
 const BETS_FILE = "bets.json";
@@ -21,11 +25,6 @@ if (!fs.existsSync(BETS_FILE)) fs.writeFileSync(BETS_FILE, "[]");
 // ===== HELPERS =====
 const clean = (t = "") => t.replace(/[*_`[\]]/g, "").trim();
 
-// fetch support
-const fetch = (...args) =>
-  import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
-// ===== MEMORY FUNC =====
 function remember(id, text) {
   if (!MEMORY.has(id)) MEMORY.set(id, []);
   const mem = MEMORY.get(id);
@@ -33,20 +32,21 @@ function remember(id, text) {
   if (mem.length > 3) mem.shift();
 }
 
-// ===== AI =====
+// ================= AI =================
 async function askAI(text) {
   try {
     const res = await fetch(
-      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`
+      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`,
+      { headers: { "User-Agent": "Mozilla/5.0" } }
     );
     const j = await res.json();
     return clean(j.response || "لا يوجد رد");
-  } catch {
+  } catch (e) {
     return "⚠️ الذكاء غير متاح الآن";
   }
 }
 
-// ===== STATS =====
+// ================= APIs =================
 async function getStats(match) {
   let stats = "";
 
@@ -74,7 +74,7 @@ async function getStats(match) {
   return stats || "لا توجد إحصائيات مباشرة، سيتم الاعتماد على التحليل الذكي.";
 }
 
-// ===== START =====
+// ================= START =================
 bot.onText(/\/start/, msg => {
   const kb = [
     ["🤖 تحليل رياضي AI", "🎯 توقع رياضي AI"],
@@ -93,7 +93,7 @@ bot.onText(/\/start/, msg => {
   MEMORY.delete(msg.chat.id);
 });
 
-// ===== MESSAGE HANDLER =====
+// ================= HANDLER =================
 bot.on("message", async msg => {
   const id = msg.chat.id;
   const t = msg.text;
@@ -125,7 +125,7 @@ bot.on("message", async msg => {
 سياق آخر الأسئلة:
 ${context}
 
-أجب على آخر سؤال فقط بدقة واحتراف.
+أجب على آخر سؤال فقط بدقة.
 `)
     );
   }
@@ -183,8 +183,8 @@ ${stats}
 
   if (t === "🗑️ حذف رهانات اليوم" && msg.from.id === ADMIN_ID) {
     fs.writeFileSync(BETS_FILE, "[]");
-    return bot.sendMessage(id, "🗑️ تم حذف أوراق اليوم");
+    return bot.sendMessage(id, "🗑️ تم حذف رهانات اليوم");
   }
 });
 
-console.log("✅ AZIX AI Bot Running");
+console.log("✅ Bot running");
