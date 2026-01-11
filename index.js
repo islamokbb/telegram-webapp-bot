@@ -1,7 +1,7 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
-// ===== fetch =====
+// ===== fetch (ضروري) =====
 const fetch = (...args) =>
   import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
@@ -15,8 +15,8 @@ const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ===== STATE & MEMORY =====
-const STATE = new Map();   // NONE | ANALYZE | PREDICT | ADD
-const MEMORY = new Map();  // آخر 3 رسائل
+const STATE = new Map();      // NONE | ANALYZE | PREDICT | ADD
+const MEMORY = new Map();     // آخر 3 رسائل
 
 // ===== FILE =====
 const BETS_FILE = "bets.json";
@@ -36,12 +36,11 @@ function remember(id, text) {
 async function askAI(text) {
   try {
     const res = await fetch(
-      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`,
-      { headers: { "User-Agent": "Mozilla/5.0" } }
+      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`
     );
     const j = await res.json();
     return clean(j.response || "لا يوجد رد");
-  } catch (e) {
+  } catch {
     return "⚠️ الذكاء غير متاح الآن";
   }
 }
@@ -122,7 +121,7 @@ bot.on("message", async msg => {
       id,
       await askAI(`
 أنت محلل كرة قدم محترف.
-سياق آخر الأسئلة:
+سياق الأسئلة:
 ${context}
 
 أجب على آخر سؤال فقط بدقة.
@@ -170,7 +169,7 @@ ${stats}
 
   if (t === "➕ إضافة رهان" && msg.from.id === ADMIN_ID) {
     STATE.set(id, "ADD");
-    return bot.sendMessage(id, "✏️ اكتب الأوراق (كل سطر ورقة)");
+    return bot.sendMessage(id, "✏️ اكتب الرهانات (كل سطر رهان)");
   }
 
   if (STATE.get(id) === "ADD" && msg.from.id === ADMIN_ID) {
