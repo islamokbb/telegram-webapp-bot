@@ -1,187 +1,141 @@
 const TelegramBot = require("node-telegram-bot-api");
+const fs = require("fs");
 
-// ================== ENV ==================
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
+const ADMIN_ID = Number(process.env.ADMIN_ID);
 const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
 const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 
-// ================== BOT ==================
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const STATE = new Map();
 
-// ================== STATE ==================
-const USER_STATE = new Map(); // PREDICTION
-const SESSION = new Map();    // chatId -> { match }
+const BETS_FILE = "bets.json";
+if (!fs.existsSync(BETS_FILE)) fs.writeFileSync(BETS_FILE, "[]");
 
-// ================== AI ==================
-async function askAI(prompt) {
+const clean = (t="") => t.replace(/[*_`[\]]/g,"").trim();
+
+// ================= AI =================
+async function askAI(text) {
   try {
     const res = await fetch(
-      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(prompt)}`
+      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`
     );
-    const data = await res.json();
-    return data.response || "❌ لا يوجد رد";
+    const j = await res.json();
+    return clean(j.response || "لا يوجد رد");
   } catch {
-    return "⚠️ الذكاء الاصطناعي غير متاح الآن";
+    return "⚠️ الذكاء غير متاح الآن";
   }
 }
 
-// ================== INTENT ==================
-function detectIntent(text) {
-  text = text.toLowerCase();
+// ================= APIs =================
+async function getStats(match) {
+  let stats = "";
 
-  if (text.includes("ركن") || text.includes("corner")) return "CORNERS";
-  if (text.includes("بطاق") || text.includes("card")) return "CARDS";
-  if (text.includes("تسديد") || text.includes("shot")) return "SHOTS";
-  if (text.includes("خطأ") || text.includes("foul")) return "FOULS";
-  if (text.includes("شوط")) return "HALF";
-  if (text.includes("يفوز") || text.includes("فوز")) return "WINNER";
-  if (text.includes("جيد") || text.includes("تمام")) return "COMMENT";
-
-  return "GENERAL";
-}
-
-// ================== API-FOOTBALL ==================
-async function getMatchData(matchName) {
   try {
-    const today = new Date().toISOString().split("T")[0];
-
     const res = await fetch(
-      `https://v3.football.api-sports.io/fixtures?date=${today}&search=${encodeURIComponent(matchName)}`,
+      `https://v3.football.api-sports.io/fixtures?search=${encodeURIComponent(match)}`,
       { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
     );
+    const j = await res.json();
+    if (j.response && j.response.length) {
+      const f = j.response[0];
+      stats += `آخر مواجهة: ${f.teams.home.name} vs ${f.teams.away.name}\n`;
+    }
+  } catch {}
 
-    const data = await res.json();
-    if (!data.response || data.response.length === 0) return null;
-
-    const m = data.response[0];
-    return {
-      home: m.teams.home.name,
-      away: m.teams.away.name,
-      league: m.league.name
-    };
-  } catch {
-    return null;
-  }
-}
-
-// ================== SPORTMONKS ==================
-async function getTeamStatsSportmonks(teamName) {
   try {
-    const searchRes = await fetch(
-      `https://api.sportmonks.com/v3/football/teams/search/${encodeURIComponent(teamName)}?api_token=${SPORTMONKS_API_KEY}`
+    const res = await fetch(
+      `https://api.sportmonks.com/v3/football/fixtures?search=${encodeURIComponent(match)}`,
+      { headers: { Authorization: SPORTMONKS_API_KEY } }
     );
-    const searchData = await searchRes.json();
-    if (!searchData.data || !searchData.data.length) return null;
+    const j = await res.json();
+    if (j.data && j.data.length) {
+      stats += "تم العثور على بيانات إضافية.\n";
+    }
+  } catch {}
 
-    const teamId = searchData.data[0].id;
-
-    const statsRes = await fetch(
-      `https://api.sportmonks.com/v3/football/teams/${teamId}?include=statistics&api_token=${SPORTMONKS_API_KEY}`
-    );
-    const statsData = await statsRes.json();
-
-    return statsData.data?.statistics || null;
-  } catch {
-    return null;
-  }
+  return stats || "لا توجد إحصائيات مباشرة، سيتم الاعتماد على التحليل الذكي.";
 }
 
-// ================== START ==================
-bot.onText(/\/start/, (msg) => {
-  USER_STATE.clear();
-  SESSION.clear();
+// ================= START =================
+bot.onText(/\/start/, msg => {
+  const kb = [
+    ["🤖 تحليل رياضي AI","🎯 توقع رياضي AI"],
+    ["📰 أوراق اليوم"],
+    ["❌ إيقاف التحليل"]
+  ];
+  if (msg.from.id === ADMIN_ID) kb.push(["➕ إضافة رهان"]);
 
-  bot.sendMessage(msg.chat.id, "⚽ مرحبًا بك في المحلل الرياضي الذكي", {
-    reply_markup: {
-      keyboard: [
-        ["🎯 توقع رياضي AI"],
-        ["❌ إيقاف التحليل"]
-      ],
-      resize_keyboard: true
-    }
+  bot.sendMessage(msg.chat.id,"⚽ أهلاً بك",{
+    reply_markup:{keyboard:kb,resize_keyboard:true}
   });
+  STATE.set(msg.chat.id,"NONE");
 });
 
-// ================== MESSAGE ==================
-bot.on("message", async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  if (!text) return;
+// ================= HANDLER =================
+bot.on("message", async msg => {
+  const id = msg.chat.id;
+  const t = msg.text;
+  if (!t) return;
 
-  // ===== START MODE =====
-  if (text === "🎯 توقع رياضي AI") {
-    USER_STATE.set(chatId, "PREDICTION");
-    SESSION.delete(chatId);
-    return bot.sendMessage(chatId, "✍️ اكتب اسم المباراة (مثال: Real Madrid vs Barcelona)");
+  if (t==="🤖 تحليل رياضي AI") {
+    STATE.set(id,"ANALYZE");
+    return bot.sendMessage(id,"اكتب سؤالك التحليلي");
   }
 
-  // ===== STOP =====
-  if (text === "❌ إيقاف التحليل") {
-    USER_STATE.delete(chatId);
-    SESSION.delete(chatId);
-    return bot.sendMessage(chatId, "🛑 تم الإيقاف");
+  if (t==="🎯 توقع رياضي AI") {
+    STATE.set(id,"PREDICT");
+    return bot.sendMessage(id,"اكتب اسم المباراة");
   }
 
-  // ===== PREDICTION =====
-  if (USER_STATE.get(chatId) === "PREDICTION") {
-    bot.sendChatAction(chatId, "typing");
+  if (t==="❌ إيقاف التحليل") {
+    STATE.set(id,"NONE");
+    return bot.sendMessage(id,"تم الإيقاف");
+  }
 
-    const intent = detectIntent(text);
-    let session = SESSION.get(chatId);
+  if (t==="📰 أوراق اليوم") {
+    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
+    if (!bets.length) return bot.sendMessage(id,"📭 لا توجد رهانات");
+    return bot.sendMessage(id,"📰 أوراق اليوم:\n\n"+bets.map((b,i)=>`${i+1}. ${b}`).join("\n"));
+  }
 
-    // أول مرة: تحديد المباراة
-    if (!session) {
-      const match = await getMatchData(text);
-      if (!match) {
-        return bot.sendMessage(chatId, "❌ لم أجد مباراة اليوم بهذا الاسم");
-      }
+  if (t==="➕ إضافة رهان" && msg.from.id===ADMIN_ID) {
+    STATE.set(id,"ADD");
+    return bot.sendMessage(id,"اكتب الرهانات (كل سطر رهان)");
+  }
 
-      SESSION.set(chatId, {
-        match: `${match.home} vs ${match.away}`
-      });
+  if (STATE.get(id)==="ADD" && msg.from.id===ADMIN_ID) {
+    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
+    t.split("\n").forEach(b=>b.trim()&&bets.push(b.trim()));
+    fs.writeFileSync(BETS_FILE,JSON.stringify(bets,null,2));
+    STATE.set(id,"NONE");
+    return bot.sendMessage(id,"✅ تم الحفظ");
+  }
 
-      return bot.sendMessage(
-        chatId,
-        `⚽ تم تحديد المباراة:\n${match.home} 🆚 ${match.away}\n\n✍️ اسأل الآن (فوز – ركنيات – بطاقات – شوط أول…)`
-      );
-    }
+  if (STATE.get(id)==="ANALYZE") {
+    bot.sendChatAction(id,"typing");
+    return bot.sendMessage(id,await askAI(`حلل رياضيًا:\n${t}`));
+  }
 
-    // سؤال ذكي
-    const home = session.match.split(" vs ")[0];
-    const away = session.match.split(" vs ")[1];
+  if (STATE.get(id)==="PREDICT") {
+    bot.sendChatAction(id,"typing");
+    const stats = await getStats(t);
+    const ai = await askAI(`
+توقع رياضي ذكي للمباراة:
+${t}
 
-    const homeStats = await getTeamStatsSportmonks(home);
-    const awayStats = await getTeamStatsSportmonks(away);
+اعتمد على:
+${stats}
 
-    const prompt = `
-أنت محلل كرة قدم محترف ⚽📊🔥
-اعتمد فقط على الأرقام، لا تخمّن.
-
-🏟️ المباراة:
-${session.match}
-
-📈 ${home}:
-${homeStats ? JSON.stringify(homeStats) : "لا توجد بيانات"}
-
-📉 ${away}:
-${awayStats ? JSON.stringify(awayStats) : "لا توجد بيانات"}
-
-🎯 نوع السؤال: ${intent}
-
-أجب باختصار + إيموجي:
-
-WINNER → 🏆 الفائز المتوقع (%)
-HALF → ⏱️ الشوط الأول
-CORNERS → 🚩 الركنيات
-CARDS → 🟨 البطاقات
-SHOTS → ⚽ التسديدات
-FOULS → ❌ الأخطاء
-COMMENT → 👍 تعليق تحليلي
-`;
-
-    const answer = await askAI(prompt);
-    return bot.sendMessage(chatId, answer);
+أعطني:
+- الفائز مع نسبة
+- الركنيات
+- البطاقات
+- التسديدات
+- الأخطاء
+`);
+    return bot.sendMessage(id,ai);
   }
 });
 
-console.log("✅ Bot_User running with AI + API-Football + SportMonks");
+console.log("✅ Bot running");
