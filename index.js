@@ -1,20 +1,39 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
+// ===== ENV =====
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
 const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 
+// ===== BOT =====
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-const STATE = new Map();
 
+// ===== STATE & MEMORY =====
+const STATE = new Map();      // ANALYZE | PREDICT | ADD | NONE
+const MEMORY = new Map();     // آخر 3 رسائل لكل مستخدم
+
+// ===== FILE =====
 const BETS_FILE = "bets.json";
 if (!fs.existsSync(BETS_FILE)) fs.writeFileSync(BETS_FILE, "[]");
 
-const clean = (t="") => t.replace(/[*_`[\]]/g,"").trim();
+// ===== HELPERS =====
+const clean = (t = "") => t.replace(/[*_`[\]]/g, "").trim();
 
-// ================= AI =================
+// fetch support
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
+// ===== MEMORY FUNC =====
+function remember(id, text) {
+  if (!MEMORY.has(id)) MEMORY.set(id, []);
+  const mem = MEMORY.get(id);
+  mem.push(text);
+  if (mem.length > 3) mem.shift();
+}
+
+// ===== AI =====
 async function askAI(text) {
   try {
     const res = await fetch(
@@ -27,7 +46,7 @@ async function askAI(text) {
   }
 }
 
-// ================= APIs =================
+// ===== STATS =====
 async function getStats(match) {
   let stats = "";
 
@@ -37,7 +56,7 @@ async function getStats(match) {
       { headers: { "x-apisports-key": FOOTBALL_API_KEY } }
     );
     const j = await res.json();
-    if (j.response && j.response.length) {
+    if (j.response?.length) {
       const f = j.response[0];
       stats += `آخر مواجهة: ${f.teams.home.name} vs ${f.teams.away.name}\n`;
     }
@@ -49,93 +68,123 @@ async function getStats(match) {
       { headers: { Authorization: SPORTMONKS_API_KEY } }
     );
     const j = await res.json();
-    if (j.data && j.data.length) {
-      stats += "تم العثور على بيانات إضافية.\n";
-    }
+    if (j.data?.length) stats += "تم العثور على بيانات إضافية.\n";
   } catch {}
 
   return stats || "لا توجد إحصائيات مباشرة، سيتم الاعتماد على التحليل الذكي.";
 }
 
-// ================= START =================
+// ===== START =====
 bot.onText(/\/start/, msg => {
   const kb = [
-    ["🤖 تحليل رياضي AI","🎯 توقع رياضي AI"],
+    ["🤖 تحليل رياضي AI", "🎯 توقع رياضي AI"],
     ["📰 أوراق اليوم"],
     ["❌ إيقاف التحليل"]
   ];
-  if (msg.from.id === ADMIN_ID) kb.push(["➕ إضافة رهان"]);
 
-  bot.sendMessage(msg.chat.id,"⚽ أهلاً بك",{
-    reply_markup:{keyboard:kb,resize_keyboard:true}
+  if (msg.from.id === ADMIN_ID)
+    kb.push(["➕ إضافة رهان", "🗑️ حذف رهانات اليوم"]);
+
+  bot.sendMessage(msg.chat.id, "⚽ أهلاً بك في AZIX AI", {
+    reply_markup: { keyboard: kb, resize_keyboard: true }
   });
-  STATE.set(msg.chat.id,"NONE");
+
+  STATE.set(msg.chat.id, "NONE");
+  MEMORY.delete(msg.chat.id);
 });
 
-// ================= HANDLER =================
+// ===== MESSAGE HANDLER =====
 bot.on("message", async msg => {
   const id = msg.chat.id;
   const t = msg.text;
   if (!t) return;
 
-  if (t==="🤖 تحليل رياضي AI") {
-    STATE.set(id,"ANALYZE");
-    return bot.sendMessage(id,"اكتب سؤالك التحليلي");
+  // ---- STOP ----
+  if (t === "❌ إيقاف التحليل") {
+    STATE.set(id, "NONE");
+    MEMORY.delete(id);
+    return bot.sendMessage(id, "تم الإيقاف");
   }
 
-  if (t==="🎯 توقع رياضي AI") {
-    STATE.set(id,"PREDICT");
-    return bot.sendMessage(id,"اكتب اسم المباراة");
+  // ---- ANALYZE ----
+  if (t === "🤖 تحليل رياضي AI") {
+    STATE.set(id, "ANALYZE");
+    MEMORY.delete(id);
+    return bot.sendMessage(id, "🧠 اسأل أي سؤال تحليلي");
   }
 
-  if (t==="❌ إيقاف التحليل") {
-    STATE.set(id,"NONE");
-    return bot.sendMessage(id,"تم الإيقاف");
+  if (STATE.get(id) === "ANALYZE") {
+    remember(id, t);
+    const context = MEMORY.get(id).join("\n");
+
+    bot.sendChatAction(id, "typing");
+    return bot.sendMessage(
+      id,
+      await askAI(`
+أنت محلل كرة قدم محترف.
+سياق آخر الأسئلة:
+${context}
+
+أجب على آخر سؤال فقط بدقة واحتراف.
+`)
+    );
   }
 
-  if (t==="📰 أوراق اليوم") {
-    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
-    if (!bets.length) return bot.sendMessage(id,"📭 لا توجد رهانات");
-    return bot.sendMessage(id,"📰 أوراق اليوم:\n\n"+bets.map((b,i)=>`${i+1}. ${b}`).join("\n"));
+  // ---- PREDICT ----
+  if (t === "🎯 توقع رياضي AI") {
+    STATE.set(id, "PREDICT");
+    MEMORY.delete(id);
+    return bot.sendMessage(id, "🎯 اسأل عن أي مباراة أو توقع");
   }
 
-  if (t==="➕ إضافة رهان" && msg.from.id===ADMIN_ID) {
-    STATE.set(id,"ADD");
-    return bot.sendMessage(id,"اكتب الرهانات (كل سطر رهان)");
-  }
+  if (STATE.get(id) === "PREDICT") {
+    remember(id, t);
+    const context = MEMORY.get(id).join("\n");
+    const stats = await getStats(context);
 
-  if (STATE.get(id)==="ADD" && msg.from.id===ADMIN_ID) {
-    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
-    t.split("\n").forEach(b=>b.trim()&&bets.push(b.trim()));
-    fs.writeFileSync(BETS_FILE,JSON.stringify(bets,null,2));
-    STATE.set(id,"NONE");
-    return bot.sendMessage(id,"✅ تم الحفظ");
-  }
+    bot.sendChatAction(id, "typing");
+    return bot.sendMessage(
+      id,
+      await askAI(`
+توقع كرة قدم ذكي.
+سياق المحادثة:
+${context}
 
-  if (STATE.get(id)==="ANALYZE") {
-    bot.sendChatAction(id,"typing");
-    return bot.sendMessage(id,await askAI(`حلل رياضيًا:\n${t}`));
-  }
-
-  if (STATE.get(id)==="PREDICT") {
-    bot.sendChatAction(id,"typing");
-    const stats = await getStats(t);
-    const ai = await askAI(`
-توقع رياضي ذكي للمباراة:
-${t}
-
-اعتمد على:
+إحصائيات:
 ${stats}
 
-أعطني:
-- الفائز مع نسبة
-- الركنيات
-- البطاقات
-- التسديدات
-- الأخطاء
-`);
-    return bot.sendMessage(id,ai);
+أجب على آخر سؤال فقط بدون طرح أسئلة.
+`)
+    );
+  }
+
+  // ---- BETS ----
+  if (t === "📰 أوراق اليوم") {
+    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
+    if (!bets.length) return bot.sendMessage(id, "📭 لا توجد أوراق اليوم");
+    return bot.sendMessage(
+      id,
+      "📰 أوراق اليوم:\n\n" + bets.map((b, i) => `${i + 1}. ${b}`).join("\n")
+    );
+  }
+
+  if (t === "➕ إضافة رهان" && msg.from.id === ADMIN_ID) {
+    STATE.set(id, "ADD");
+    return bot.sendMessage(id, "✏️ اكتب الأوراق (كل سطر ورقة)");
+  }
+
+  if (STATE.get(id) === "ADD" && msg.from.id === ADMIN_ID) {
+    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
+    t.split("\n").forEach(b => b.trim() && bets.push(b.trim()));
+    fs.writeFileSync(BETS_FILE, JSON.stringify(bets, null, 2));
+    STATE.set(id, "NONE");
+    return bot.sendMessage(id, "✅ تم الحفظ");
+  }
+
+  if (t === "🗑️ حذف رهانات اليوم" && msg.from.id === ADMIN_ID) {
+    fs.writeFileSync(BETS_FILE, "[]");
+    return bot.sendMessage(id, "🗑️ تم حذف أوراق اليوم");
   }
 });
 
-console.log("✅ Bot running");
+console.log("✅ AZIX AI Bot Running");
