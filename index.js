@@ -10,9 +10,8 @@ const SPORTMONKS_API_KEY = process.env.SPORTMONKS_API_KEY;
 // ===== BOT =====
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// ===== STATE & MEMORY =====
-const STATE = new Map();   // NONE | ANALYZE | PREDICT | ADD
-const MEMORY = new Map();  // آخر 3 أسئلة
+// ===== STATE =====
+const STATE = new Map(); // NONE | ANALYZE | PREDICT | ADD
 
 // ===== FILE =====
 const BETS_FILE = "bets.json";
@@ -21,27 +20,11 @@ if (!fs.existsSync(BETS_FILE)) fs.writeFileSync(BETS_FILE, "[]");
 // ===== HELPERS =====
 const clean = (t = "") => t.replace(/[*_`[\]]/g, "").trim();
 
-const BUTTONS = [
-  "🤖 تحليل رياضي AI",
-  "🎯 توقع رياضي AI",
-  "📰 أوراق اليوم",
-  "➕ إضافة رهان",
-  "🗑️ حذف رهانات اليوم",
-  "❌ إيقاف"
-];
-
-function remember(id, text) {
-  if (!MEMORY.has(id)) MEMORY.set(id, []);
-  const mem = MEMORY.get(id);
-  mem.push(text);
-  if (mem.length > 3) mem.shift();
-}
-
 // ================= AI =================
-async function askAI(prompt) {
+async function askAI(text) {
   try {
     const res = await fetch(
-      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(prompt)}`
+      `http://fi8.bot-hosting.net:20163/elos-gemina?text=${encodeURIComponent(text)}`
     );
     const j = await res.json();
     return clean(j.response || "لا يوجد رد");
@@ -62,11 +45,11 @@ async function getStats(match) {
     const j = await res.json();
     if (j.response?.length) {
       const f = j.response[0];
-      stats += `• آخر مواجهة: ${f.teams.home.name} vs ${f.teams.away.name}\n`;
+      stats += `آخر مواجهة: ${f.teams.home.name} vs ${f.teams.away.name}\n`;
     }
   } catch {}
 
-  return stats || "• لا توجد إحصائيات مباشرة.";
+  return stats || "لا توجد إحصائيات مباشرة، سيتم الاعتماد على التحليل الذكي.";
 }
 
 // ================= START =================
@@ -85,7 +68,6 @@ bot.onText(/\/start/, msg => {
   });
 
   STATE.set(msg.chat.id, "NONE");
-  MEMORY.delete(msg.chat.id);
 });
 
 // ================= HANDLER =================
@@ -94,84 +76,80 @@ bot.on("message", async msg => {
   const t = msg.text;
   if (!t) return;
 
-  // ===== STOP =====
+  // =================================================
+  // 🔴 أزرار عامة (تُلغي أي وضع سابق)
+  // =================================================
+
+  if (t === "📰 أوراق اليوم") {
+    STATE.set(id, "NONE");
+    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
+    if (!bets.length) {
+      return bot.sendMessage(id, "📭 لا توجد رهانات اليوم");
+    }
+    return bot.sendMessage(
+      id,
+      "📰 أوراق اليوم:\n\n" +
+        bets.map((b, i) => `${i + 1}. ${b}`).join("\n")
+    );
+  }
+
   if (t === "❌ إيقاف") {
     STATE.set(id, "NONE");
-    MEMORY.delete(id);
     return bot.sendMessage(id, "⛔ تم الإيقاف");
   }
 
-  // ===== ANALYZE =====
+  if (t === "🗑️ حذف رهانات اليوم" && msg.from.id === ADMIN_ID) {
+    STATE.set(id, "NONE");
+    fs.writeFileSync(BETS_FILE, "[]");
+    return bot.sendMessage(id, "🗑️ تم حذف رهانات اليوم");
+  }
+
+  // =================================================
+  // 🟢 أزرار تغيير الوضع
+  // =================================================
+
   if (t === "🤖 تحليل رياضي AI") {
     STATE.set(id, "ANALYZE");
-    MEMORY.delete(id);
     return bot.sendMessage(id, "🧠 اكتب سؤالك التحليلي");
   }
 
-  if (STATE.get(id) === "ANALYZE") {
-    if (BUTTONS.includes(t)) return; // 🔴 تجاهل الأزرار
-
-    remember(id, t);
-    const context = MEMORY.get(id).join("\n");
-
-    const reply = await askAI(`
-أنت محلل كرة قدم محترف.
-
-سياق الأسئلة:
-${context}
-
-أجب على آخر سؤال فقط بأسلوب واضح ومنظم.
-`);
-
-    return bot.sendMessage(
-      id,
-      `📊 تحليل AZIX AI\n────────────\n${reply}`
-    );
-  }
-
-  // ===== PREDICT =====
   if (t === "🎯 توقع رياضي AI") {
     STATE.set(id, "PREDICT");
-    MEMORY.delete(id);
     return bot.sendMessage(id, "✍️ اكتب اسم المباراة");
   }
 
+  // =================================================
+  // 🔵 منطق الحالات
+  // =================================================
+
+  if (STATE.get(id) === "ANALYZE") {
+    bot.sendChatAction(id, "typing");
+    return bot.sendMessage(id, await askAI(`حلل رياضيًا:\n${t}`));
+  }
+
   if (STATE.get(id) === "PREDICT") {
-    if (BUTTONS.includes(t)) return; // 🔴 تجاهل الأزرار
-
+    bot.sendChatAction(id, "typing");
     const stats = await getStats(t);
-
-    const reply = await askAI(`
-توقع مباراة كرة قدم.
-
-المباراة:
+    const ai = await askAI(`
+توقع رياضي ذكي للمباراة:
 ${t}
 
-إحصائيات:
+اعتمد على:
 ${stats}
 
 أعطني:
-- الفائز المتوقع
-- نسبة تقريبية
-- سيناريو المباراة
+- الفائز مع نسبة
+- الركنيات
+- البطاقات
+- التسديدات
+- الأخطاء
 `);
-
-    return bot.sendMessage(
-      id,
-      `🎯 توقع AZIX AI\n────────────\n${reply}`
-    );
+    return bot.sendMessage(id, ai);
   }
 
-  // ===== BETS =====
-  if (t === "📰 أوراق اليوم") {
-    STATE.set(id, "NONE"); // 🔴 إلغاء أي وضع سابق
-    const bets = JSON.parse(fs.readFileSync(BETS_FILE));
-    if (!bets.length) return bot.sendMessage(id, "📭 لا توجد رهانات");
-    return bot.sendMessage(
-      id,
-      "📰 أوراق اليوم:\n\n" + bets.map((b, i) => `${i + 1}. ${b}`).join("\n")
-    );
-  }
+  // =================================================
+  // 🟣 إضافة رهانات
+  // =================================================
 
   if (t === "➕ إضافة رهان" && msg.from.id === ADMIN_ID) {
     STATE.set(id, "ADD");
@@ -184,12 +162,6 @@ ${stats}
     fs.writeFileSync(BETS_FILE, JSON.stringify(bets, null, 2));
     STATE.set(id, "NONE");
     return bot.sendMessage(id, "✅ تم الحفظ");
-  }
-
-  if (t === "🗑️ حذف رهانات اليوم" && msg.from.id === ADMIN_ID) {
-    fs.writeFileSync(BETS_FILE, "[]");
-    STATE.set(id, "NONE");
-    return bot.sendMessage(id, "🗑️ تم حذف رهانات اليوم");
   }
 });
 
