@@ -2,8 +2,6 @@ const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 
 // ===== fetch =====
-const fetch = (...args) =>
-  import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 // ===== ENV =====
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
